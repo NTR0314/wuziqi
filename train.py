@@ -357,6 +357,7 @@ class TrainPipeline:
                             requests.append(state)
                             request_availables.append(availables)
                             request_pipes.append(pipe)
+                            self.logger.info(f"Requests growing: current size {len(requests)}")
                     except EOFError:
                         pass
                 
@@ -364,6 +365,7 @@ class TrainPipeline:
                 if requests:
                     inference_start = time.time()
                     state_batch = np.array(requests)
+                    self.logger.info(f"Performing inference on device: {next(self.policy_value_net.policy_value_net.parameters()).device}")
                     act_probs, values = self.policy_value_net.policy_value(state_batch)
                     self.monitor.log_inference(time.time() - inference_start, len(requests))
                     
