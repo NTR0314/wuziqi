@@ -1,0 +1,17 @@
+[project]
+name = "gomoku-rl"
+version = "0.1.0"
+description = "AlphaZero implementation for Gomoku"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy",
+    "torch",
+    "wandb",
+    "tqdm",
+]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest",
+]

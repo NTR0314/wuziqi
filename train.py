@@ -277,6 +277,11 @@ class TrainPipeline:
                                     print("New best policy!")
                                     self.best_win_ratio = win_ratio
                                     self.policy_value_net.save_model('./best_policy.model')
+                                    
+                                    # Log model artifact to WandB
+                                    artifact = wandb.Artifact('gomoku-policy', type='model')
+                                    artifact.add_file('./best_policy.model')
+                                    wandb.log_artifact(artifact)
                                 
                         else:
                             # Prediction request: (state, availables)
