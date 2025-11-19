@@ -71,17 +71,29 @@ def self_play_worker(worker_id, conn, config, model_file=None):
     Worker process that plays games against itself.
     conn: Connection to the model server (Pipe)
     """
+    # Setup worker logger to write to main train.log
+    worker_logger = logging.getLogger(f"worker_{worker_id}")
+    worker_logger.setLevel(logging.INFO)
+    handler = logging.FileHandler("train.log")
+    handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(message)s'))
+    worker_logger.addHandler(handler)
+    
+    worker_logger.info(f"Worker {worker_id} started")
+    
     # Initialize environment
     board = Board(width=config['board_width'],
                   height=config['board_height'],
                   n_in_row=config['n_in_row'])
     game = Game(board)
     
+    # Track statistics
+    request_count = 0
+    
     # Define the remote policy function
     def policy_value_fn(board):
+        nonlocal request_count
+        request_count += 1
         # Send request to server
-        # We send: (worker_id, state, availables)
-        # But since we have a direct pipe, we just send the data
         conn.send((board.current_state(), board.availables))
         # Wait for response
         action_probs, value = conn.recv()
@@ -94,17 +106,21 @@ def self_play_worker(worker_id, conn, config, model_file=None):
                              is_selfplay=1,
                              use_parallel=False)
     
+    game_num = 0
     while True:
         # Play a game
+        game_start = time.time()
+        request_count = 0
+        
         winner, play_data, moves = game.start_self_play(mcts_player, temp=config['temp'])
         
-        # Send game data to server (using the same pipe for simplicity, or a separate queue?)
-        # Mixing prediction requests and data might be tricky if server expects only predictions.
-        # Let's use a special tag for data.
-        # Protocol: 
-        # Prediction request: (state, availables) -> tuple
-        # Game Data: "DATA", (winner, play_data, moves)
+        game_duration = time.time() - game_start
+        game_num += 1
         
+        worker_logger.info(f"Worker {worker_id} Game {game_num}: {game_duration:.2f}s, "
+                          f"{len(moves)} moves, {request_count} NN requests, winner: {winner}")
+        
+        # Send game data to server
         conn.send(("DATA", (winner, list(play_data), moves)))
         
         # No response expected for data
