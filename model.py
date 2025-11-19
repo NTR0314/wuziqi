@@ -4,6 +4,10 @@ import torch.nn.functional as F
 import numpy as np
 from game import Board
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 class ResidualBlock(nn.Module):
     def __init__(self, num_filters):
         super(ResidualBlock, self).__init__()
@@ -80,8 +84,10 @@ class PolicyValueNet:
         
         if self.use_gpu and torch.cuda.is_available():
             self.device = torch.device("cuda")
+            logger.info(f"PolicyValueNet initialized on GPU: {torch.cuda.get_device_name(0)}")
         else:
             self.device = torch.device("cpu")
+            logger.info("PolicyValueNet initialized on CPU")
 
         self.policy_value_net = GomokuNet(board_width, board_height).to(self.device)
 

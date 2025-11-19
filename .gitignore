@@ -5,3 +5,7 @@ __pycache__/
 logs/
 # wandb
 wandb/
+# for now
+uv.lock
+# idk
+train.log

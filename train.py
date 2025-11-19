@@ -1,3 +1,7 @@
+import logging
+import time
+import os
+import torch
 import random
 import numpy as np
 import multiprocessing as mp
@@ -5,10 +9,62 @@ from collections import deque
 from game import Board, Game
 from mcts import MCTSPlayer
 from model import PolicyValueNet
-import time
 import wandb
-import os
-import torch
+
+# Configure logging
+def setup_logger(log_file, level=logging.INFO):
+    formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
+    handler = logging.FileHandler(log_file)
+    handler.setFormatter(formatter)
+    
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+
+    # Configure root logger
+    logger = logging.getLogger()
+    logger.setLevel(level)
+    # Remove existing handlers to avoid duplicates if called multiple times
+    logger.handlers = []
+    logger.addHandler(handler)
+    logger.addHandler(console_handler)
+    return logger
+
+class PerformanceMonitor:
+    def __init__(self):
+        self.reset()
+        
+    def reset(self):
+        self.inference_times = []
+        self.wait_times = []
+        self.training_times = []
+        self.batch_sizes = []
+        self.start_time = time.time()
+        
+    def log_inference(self, duration, batch_size):
+        self.inference_times.append(duration)
+        self.batch_sizes.append(batch_size)
+        
+    def log_wait(self, duration):
+        self.wait_times.append(duration)
+        
+    def log_training(self, duration):
+        self.training_times.append(duration)
+        
+    def get_stats(self):
+        stats = {}
+        if self.inference_times:
+            stats['avg_inference_ms'] = np.mean(self.inference_times) * 1000
+            stats['max_inference_ms'] = np.max(self.inference_times) * 1000
+        if self.wait_times:
+            stats['avg_wait_ms'] = np.mean(self.wait_times) * 1000
+            stats['total_wait_s'] = np.sum(self.wait_times)
+        if self.training_times:
+            stats['avg_train_s'] = np.mean(self.training_times)
+        if self.batch_sizes:
+            stats['avg_batch_size'] = np.mean(self.batch_sizes)
+            
+        stats['duration_s'] = time.time() - self.start_time
+        return stats
 
 def self_play_worker(worker_id, conn, config, model_file=None):
     """
@@ -115,6 +171,10 @@ class TrainPipeline:
         self.n_in_row = 5
         self.debug = debug
         
+        # Logging
+        self.logger = setup_logger("train.log")
+        self.monitor = PerformanceMonitor()
+        
         # training params
         self.learn_rate = 2e-3
         self.lr_multiplier = 1.0
@@ -130,7 +190,8 @@ class TrainPipeline:
         self.game_batch_num = 1500
         self.best_win_ratio = 0.0
         
-        self.num_workers = 8 # Number of self-play workers
+        # Number of self-play workers based on CPU count
+        self.num_workers = mp.cpu_count()
         if self.debug:
             self.num_workers = 2
             self.n_playout = 50
@@ -161,6 +222,8 @@ class TrainPipeline:
 
         # WandB
         wandb.init(project="gomoku-rl", config=self.config)
+        
+        self.logger.info(f"Training started with config: {self.config}")
 
     def get_equi_data(self, play_data):
         """augment the data set by rotation and flipping"""
@@ -182,6 +245,7 @@ class TrainPipeline:
 
     def policy_update(self):
         """update the policy-value net"""
+        start_time = time.time()
         mini_batch = random.sample(self.data_buffer, self.batch_size)
         state_batch = [data[0] for data in mini_batch]
         mcts_probs_batch = [data[1] for data in mini_batch]
@@ -215,6 +279,8 @@ class TrainPipeline:
             "lr_multiplier": self.lr_multiplier,
             "learning_rate": self.learn_rate * self.lr_multiplier
         })
+        
+        self.monitor.log_training(time.time() - start_time)
         return loss, entropy
 
     def run(self):
@@ -229,14 +295,16 @@ class TrainPipeline:
             workers.append(p)
             pipes.append(parent_conn)
             
-        print(f"Started {self.num_workers} workers.")
+        self.logger.info(f"Started {self.num_workers} workers (CPU count: {mp.cpu_count()})")
         
         try:
             game_count = 0
             while game_count < self.game_batch_num:
                 # Model Server Loop
                 # Collect requests
+                wait_start = time.time()
                 ready_pipes = mp.connection.wait(pipes, timeout=0.01)
+                self.monitor.log_wait(time.time() - wait_start)
                 
                 requests = []
                 request_pipes = []
@@ -252,7 +320,7 @@ class TrainPipeline:
                             play_data = self.get_equi_data(play_data)
                             self.data_buffer.extend(play_data)
                             game_count += 1
-                            print(f"Game {game_count} collected. Buffer size: {len(self.data_buffer)}")
+                            self.logger.info(f"Game {game_count} collected. Buffer size: {len(self.data_buffer)}")
                             
                             # Log sample game
                             if game_count % 10 == 0:
@@ -268,13 +336,13 @@ class TrainPipeline:
                             # Check for evaluation
                             if game_count % self.check_freq == 0:
                                 self.policy_value_net.save_model('./current_policy.model')
-                                print("Evaluating...")
+                                self.logger.info("Evaluating...")
                                 win_ratio = evaluation_worker(0, None, self.config, './best_policy.model', './current_policy.model')
-                                print(f"Win ratio: {win_ratio}")
+                                self.logger.info(f"Win ratio: {win_ratio}")
                                 wandb.log({"win_ratio": win_ratio})
                                 
                                 if win_ratio > 0.55: # Slight bias towards challenger
-                                    print("New best policy!")
+                                    self.logger.info("New best policy!")
                                     self.best_win_ratio = win_ratio
                                     self.policy_value_net.save_model('./best_policy.model')
                                     
@@ -294,8 +362,10 @@ class TrainPipeline:
                 
                 # Batch inference
                 if requests:
+                    inference_start = time.time()
                     state_batch = np.array(requests)
                     act_probs, values = self.policy_value_net.policy_value(state_batch)
+                    self.monitor.log_inference(time.time() - inference_start, len(requests))
                     
                     for i, pipe in enumerate(request_pipes):
                         # Filter legal moves
@@ -306,9 +376,21 @@ class TrainPipeline:
                         
                         pipe.send((legal_probs, values[i]))
                 
+                # Log stats periodically
+                if game_count > 0 and game_count % 100 == 0:
+                    stats = self.monitor.get_stats()
+                    self.logger.info(f"Stats at game {game_count}: {stats}")
+                    wandb.log(stats)
+                    self.monitor.reset()
+                
         except KeyboardInterrupt:
-            print("Stopping...")
+            self.logger.info("Stopping...")
         finally:
+            # Upload log file to WandB
+            if os.path.exists("train.log"):
+                wandb.save("train.log")
+                self.logger.info("Uploaded train.log to WandB")
+            
             for p in workers:
                 p.terminate()
                 p.join()
