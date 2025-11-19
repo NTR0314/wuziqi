@@ -1,0 +1,7 @@
+__pycache__/
+# model files
+*.model
+# logs
+logs/
+# wandb
+wandb/
