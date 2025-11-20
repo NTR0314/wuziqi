@@ -13,7 +13,7 @@ import wandb
 
 # Configure logging
 def setup_logger(log_file, level=logging.INFO):
-    formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
+    formatter = logging.Formatter('%(asctime)s [%(name)s] %(levelname)s %(message)s')
     handler = logging.FileHandler(log_file)
     handler.setFormatter(formatter)
     
@@ -75,7 +75,7 @@ def self_play_worker(worker_id, conn, config, model_file=None):
     worker_logger = logging.getLogger(f"worker_{worker_id}")
     worker_logger.setLevel(logging.INFO)
     handler = logging.FileHandler("train.log")
-    handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(message)s'))
+    handler.setFormatter(logging.Formatter('%(asctime)s [%(name)s] %(levelname)s %(message)s'))
     worker_logger.addHandler(handler)
     
     worker_logger.info(f"Worker {worker_id} started")
@@ -189,6 +189,7 @@ class TrainPipeline:
         
         # Logging
         self.logger = setup_logger("train.log")
+        self.logger = logging.getLogger("master")  # Rename to 'master' for clarity
         self.monitor = PerformanceMonitor()
         
         # training params
